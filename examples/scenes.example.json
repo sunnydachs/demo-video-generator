@@ -1,0 +1,23 @@
+{
+  "scenes": [
+    {
+      "id": "intro",
+      "image": "shots/intro.png",
+      "title": "Intro",
+      "narration": "こんにちは。これは製品デモ動画です。",
+      "post_pad_sec": 0.4
+    },
+    {
+      "id": "features",
+      "image": "shots/features.png",
+      "title": "Key Features",
+      "narration": "この機能で複雑な作業が数クリックに変わります。",
+      "subtitle": "Features make complex work simple."
+    },
+    {
+      "id": "closing",
+      "image": "shots/closing.png",
+      "narration": "本日はご視聴ありがとうございました。"
+    }
+  ]
+}
