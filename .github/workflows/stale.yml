@@ -1,0 +1,19 @@
+name: Mark and close stale issues/PRs
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # weekly Sunday 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v11
+        with:
+          days-before-stale: 30
+          days-before-close: 7
