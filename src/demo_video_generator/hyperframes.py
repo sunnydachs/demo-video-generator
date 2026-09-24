@@ -171,8 +171,10 @@ def build_index_html(
         font-size: 56px;
         font-weight: 600;
         letter-spacing: -0.02em;
-        text-shadow: 0 2px 20px rgba(0,0,0,0.75);
         line-height: 1.25;
+        background: rgba(10, 10, 14, 0.78);
+        padding: 18px 30px;
+        border-radius: 16px;
       }}
     </style>
   </head>

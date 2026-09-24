@@ -33,6 +33,25 @@ from .manifest import Scene
 ZOOM_MAG = 0.12  # zoom_in/zoom_out: window scales by up to 1 + ZOOM_MAG
 PAN_MAG = 0.10  # pan_*: constant zoom > 1 creates the travel margin
 
+# Font candidates in priority order. Japanese-capable fonts FIRST: DejaVu has
+# no CJK glyphs and renders titles as tofu. Falls back to Pillow's default
+# (headless CI without fonts) which is acceptable for non-CJK text.
+_FONT_CANDIDATES = (
+    # Linux (apt install fonts-ipafont-gothic / fonts-noto-cjk)
+    "/usr/share/fonts/opentype/ipafont-gothic/ipagp.ttf",
+    "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
+    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+    # Windows drives mounted under WSL
+    "/mnt/c/Windows/Fonts/NotoSansJP-VF.ttf",
+    "/mnt/c/Windows/Fonts/YuGothR.ttc",
+    "/mnt/c/Windows/Fonts/msgothic.ttc",
+    # Classic Linux names
+    "DejaVuSans-Bold.ttf",
+    "DejaVuSans.ttf",
+)
+
 
 def frame_count(duration_sec: float, fps: int) -> int:
     """Number of frames covering ``duration_sec`` at ``fps`` (ceil)."""
@@ -52,13 +71,13 @@ def camera_scale(mode: str) -> float:
 
 @dataclass
 class Box:
-    left: int
-    top: int
-    width: int
-    height: int
+    left: float
+    top: float
+    width: float
+    height: float
 
     @property
-    def right(self) -> int:
+    def right(self) -> float:
         return self.left + self.width
 
 
@@ -68,12 +87,14 @@ def camera_rect(mode: str, t: float, content_w: int, content_h: int) -> Box:
     Pure math, offline-testable. ``static`` returns the full content box;
     zooms interpolate the window size toward/away from the center; pans keep
     a constant (zoomed) window and travel across the free axis margin.
+    Coordinates stay FLOAT (subpixel): integer rounding makes slow camera
+    moves jitter in visible 1-2px steps.
     """
     if mode not in ANIMATION_MODES:
         raise ValueError(f"unknown animation mode: {mode}")
     t = min(max(float(t), 0.0), 1.0)
     if mode == ANIMATION_STATIC:
-        return Box(left=0, top=0, width=content_w, height=content_h)
+        return Box(left=0.0, top=0.0, width=float(content_w), height=float(content_h))
 
     peak = camera_scale(mode)
     if mode == "zoom_in":
@@ -83,22 +104,22 @@ def camera_rect(mode: str, t: float, content_w: int, content_h: int) -> Box:
     else:  # pans: constant zoom
         scale = peak
 
-    w = max(1, round(content_w / scale))
-    h = max(1, round(content_h / scale))
+    w = max(1.0, content_w / scale)
+    h = max(1.0, content_h / scale)
     free_w = content_w - w
     free_h = content_h - h
 
     if mode == "zoom_in" or mode == "zoom_out":
-        left = round(free_w / 2)
-        top = round(free_h / 2)
+        left = free_w / 2
+        top = free_h / 2
     elif mode == "pan_left":
-        left, top = round(free_w * (1.0 - t)), round(free_h / 2)
+        left, top = free_w * (1.0 - t), free_h / 2
     elif mode == "pan_right":
-        left, top = round(free_w * t), round(free_h / 2)
+        left, top = free_w * t, free_h / 2
     elif mode == "pan_up":
-        left, top = round(free_w / 2), round(free_h * (1.0 - t))
+        left, top = free_w / 2, free_h * (1.0 - t)
     else:  # pan_down
-        left, top = round(free_w / 2), round(free_h * t)
+        left, top = free_w / 2, free_h * t
     return Box(left=left, top=top, width=w, height=h)
 
 
@@ -118,10 +139,15 @@ def letterbox_draw(img_w: int, img_h: int, canvas_w: int = WIDTH, canvas_h: int 
 
 
 def load_font(size: int = TITLE_FONT_SIZE):
-    """Load a TrueType font if available, else Pillow's default font (offline-safe)."""
-    for name in ("DejaVuSans-Bold.ttf", "DejaVuSans.ttf"):
+    """Load a Japanese-capable TrueType font if available, else Pillow's default.
+
+    Tries each candidate path in order (CJK fonts first -- DejaVu renders
+    Japanese titles as tofu). Offline-safe: falls back to Pillow's default
+    font on hosts with no fonts installed (e.g. minimal CI).
+    """
+    for path in _FONT_CANDIDATES:
         try:
-            return ImageFont.truetype(name, size=size)
+            return ImageFont.truetype(path, size=size)
         except OSError:
             continue
     try:
@@ -152,11 +178,14 @@ def render_scene(
     content_h = height - (TITLE_BAND_HEIGHT if scene.title else 0)
     x, y, w, h = _scale(*src_img.size, width, content_h)
     if scene.animation != ANIMATION_STATIC:
-        # Camera window in SOURCE coordinates (camera_rect is ratio-preserving),
-        # cropped then scaled once to the content box -- single resampling.
+        # Camera window in SOURCE coordinates (float/subpixel: rounding here
+        # is what made pans jitter). Pillow crop accepts a float box and does
+        # the subpixel resample in one pass via transform+resize.
         cam = camera_rect(scene.animation, progress, src_img.width, src_img.height)
-        crop = src_img.crop((cam.left, cam.top, cam.left + cam.width, cam.top + cam.height))
-        crop = crop.resize((w, h), Image.Resampling.BILINEAR)
+        crop = src_img.crop(
+            (cam.left, cam.top, cam.left + cam.width, cam.top + cam.height)
+        )
+        crop = crop.resize((w, h), Image.Resampling.LANCZOS)
         canvas.paste(crop, (x, y))
     else:
         src_img = src_img.resize((w, h), Image.Resampling.BILINEAR)
