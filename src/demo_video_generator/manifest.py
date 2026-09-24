@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from .config import DEFAULT_POST_PAD_SEC
+from .config import ANIMATION_MODES, ANIMATION_STATIC, DEFAULT_POST_PAD_SEC
 
 
 class ManifestError(Exception):
@@ -29,6 +29,7 @@ class Scene:
     title: str | None = None
     subtitle: str | None = None
     post_pad_sec: float = DEFAULT_POST_PAD_SEC
+    animation: str = ANIMATION_STATIC
 
     def __post_init__(self) -> None:
         self.post_pad_sec = float(self.post_pad_sec)
@@ -122,6 +123,11 @@ def _validate_scenes(raw: list, source: str) -> list[Scene]:
             raise ManifestError(f"scene '{sid}': 'subtitle' must be a string")
         if subtitle is None or subtitle == "":
             subtitle = narration
+        animation = item.get("animation", ANIMATION_STATIC)
+        if not isinstance(animation, str) or animation not in ANIMATION_MODES:
+            raise ManifestError(
+                f"scene '{sid}': 'animation' must be one of {', '.join(ANIMATION_MODES)}"
+            )
         out.append(
             Scene(
                 id=sid,
@@ -130,6 +136,7 @@ def _validate_scenes(raw: list, source: str) -> list[Scene]:
                 title=title,
                 subtitle=subtitle,
                 post_pad_sec=float(pad),
+                animation=animation,
             )
         )
     return out

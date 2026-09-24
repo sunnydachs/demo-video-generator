@@ -1,8 +1,10 @@
-"""Pillow frame rendering: letterbox image + title band.
+"""Pillow frame rendering: letterbox image + title band + camera work.
 
 Each scene is rendered as a 1280x720 RGB frame with the reference app
 screenshot letterboxed to fit, an optional bottom title band, and the
-narration duration mapped onto an ffmpeg frame sequence.
+narration duration mapped onto an ffmpeg frame sequence. A scene-level
+``animation`` mode moves a camera window over the still image (Ken Burns)
+so the frame sequence gains zoom/pan motion while staying deterministic.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from .config import (
+    ANIMATION_MODES,
+    ANIMATION_STATIC,
     BG_COLOR,
     HEIGHT,
     TITLE_BAND_COLOR,
@@ -24,10 +28,26 @@ from .config import (
 )
 from .manifest import Scene
 
+# Camera-work tunables (Ken Burns): magnitudes are frame-progress fractions.
+# Gentle speeds by design -- strong zoom/sway reads as unnatural motion.
+ZOOM_MAG = 0.12  # zoom_in/zoom_out: window scales by up to 1 + ZOOM_MAG
+PAN_MAG = 0.10  # pan_*: constant zoom > 1 creates the travel margin
+
 
 def frame_count(duration_sec: float, fps: int) -> int:
     """Number of frames covering ``duration_sec`` at ``fps`` (ceil)."""
     return int(math.ceil(max(0.0, duration_sec) * fps))  # noqa: RUF046 - keep int for clarity
+
+
+def camera_scale(mode: str) -> float:
+    """Peak camera zoom for ``mode`` (1.0 = no zoom; pans keep it constant)."""
+    if mode == ANIMATION_STATIC:
+        return 1.0
+    if mode in ("pan_left", "pan_right", "pan_up", "pan_down"):
+        return 1.0 + PAN_MAG
+    if mode in ("zoom_in", "zoom_out"):
+        return 1.0 + ZOOM_MAG
+    raise ValueError(f"unknown animation mode: {mode}")
 
 
 @dataclass
@@ -40,6 +60,46 @@ class Box:
     @property
     def right(self) -> int:
         return self.left + self.width
+
+
+def camera_rect(mode: str, t: float, content_w: int, content_h: int) -> Box:
+    """Camera window over the content image at progress ``t`` in [0, 1].
+
+    Pure math, offline-testable. ``static`` returns the full content box;
+    zooms interpolate the window size toward/away from the center; pans keep
+    a constant (zoomed) window and travel across the free axis margin.
+    """
+    if mode not in ANIMATION_MODES:
+        raise ValueError(f"unknown animation mode: {mode}")
+    t = min(max(float(t), 0.0), 1.0)
+    if mode == ANIMATION_STATIC:
+        return Box(left=0, top=0, width=content_w, height=content_h)
+
+    peak = camera_scale(mode)
+    if mode == "zoom_in":
+        scale = 1.0 + (peak - 1.0) * t
+    elif mode == "zoom_out":
+        scale = peak - (peak - 1.0) * t
+    else:  # pans: constant zoom
+        scale = peak
+
+    w = max(1, round(content_w / scale))
+    h = max(1, round(content_h / scale))
+    free_w = content_w - w
+    free_h = content_h - h
+
+    if mode == "zoom_in" or mode == "zoom_out":
+        left = round(free_w / 2)
+        top = round(free_h / 2)
+    elif mode == "pan_left":
+        left, top = round(free_w * (1.0 - t)), round(free_h / 2)
+    elif mode == "pan_right":
+        left, top = round(free_w * t), round(free_h / 2)
+    elif mode == "pan_up":
+        left, top = round(free_w / 2), round(free_h * (1.0 - t))
+    else:  # pan_down
+        left, top = round(free_w / 2), round(free_h * t)
+    return Box(left=left, top=top, width=w, height=h)
 
 
 def _scale(sw: float, sh: float, tw: float, th: float) -> tuple[int, int, int, int]:
@@ -78,16 +138,29 @@ def render_scene(
     width: int = WIDTH,
     height: int = HEIGHT,
     title_font_size: int = TITLE_FONT_SIZE,
+    progress: float = 0.0,
 ) -> Path:
-    """Render one scene (image letterboxed + optional title band) to ``out_path``."""
+    """Render one scene (image letterboxed + optional title band) to ``out_path``.
+
+    ``progress`` in [0, 1] drives the scene's camera work (Ken Burns); the
+    default 0.0 with ``animation: static`` reproduces the classic still frame.
+    """
     canvas = Image.new("RGB", (width, height), BG_COLOR)
 
     src_img = Image.open(scene.image)
     src_img = src_img.convert("RGB")
     content_h = height - (TITLE_BAND_HEIGHT if scene.title else 0)
     x, y, w, h = _scale(*src_img.size, width, content_h)
-    src_img = src_img.resize((w, h), Image.Resampling.BILINEAR)
-    canvas.paste(src_img, (x, y))
+    if scene.animation != ANIMATION_STATIC:
+        # Camera window in SOURCE coordinates (camera_rect is ratio-preserving),
+        # cropped then scaled once to the content box -- single resampling.
+        cam = camera_rect(scene.animation, progress, src_img.width, src_img.height)
+        crop = src_img.crop((cam.left, cam.top, cam.left + cam.width, cam.top + cam.height))
+        crop = crop.resize((w, h), Image.Resampling.BILINEAR)
+        canvas.paste(crop, (x, y))
+    else:
+        src_img = src_img.resize((w, h), Image.Resampling.BILINEAR)
+        canvas.paste(src_img, (x, y))
 
     if scene.title:
         band_top = height - TITLE_BAND_HEIGHT
@@ -125,8 +198,20 @@ def render_scene_frames(
     n = frame_count(duration, fps)
     if n == 0:
         return start_frame
-    single = render_scene(scene, out_dir / ".scene_single.png", width=width, height=height)
-    data = single.read_bytes()
+    if scene.animation == ANIMATION_STATIC:
+        # Static fast path: one render, byte-copied per frame (deterministic).
+        single = render_scene(scene, out_dir / ".scene_single.png", width=width, height=height)
+        data = single.read_bytes()
+        for i in range(n):
+            (out_dir / f"frame_{start_frame + i:05d}.png").write_bytes(data)
+        return start_frame + n
     for i in range(n):
-        (out_dir / f"frame_{start_frame + i:05d}.png").write_bytes(data)
+        progress = i / n if n > 1 else 0.0
+        render_scene(
+            scene,
+            out_dir / f"frame_{start_frame + i:05d}.png",
+            width=width,
+            height=height,
+            progress=progress,
+        )
     return start_frame + n
