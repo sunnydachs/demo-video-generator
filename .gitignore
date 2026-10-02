@@ -38,3 +38,6 @@ frames/
 *.log
 .tmp/
 .cache/
+
+# Agent working directory (plans, session artifacts). Not for publication.
+.hermes/
