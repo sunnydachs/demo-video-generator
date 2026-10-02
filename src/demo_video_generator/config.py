@@ -17,6 +17,19 @@ TITLE_COLOR = (245, 245, 245)
 TITLE_BAND_COLOR = (18, 18, 26)
 DEFAULT_POST_PAD_SEC = 0.0
 
+# Ken Burns / camera-work modes for the still image. One mode per scene.
+# The renderer maps each mode to a Pillow zoom/pan trajectory (see frames.py).
+ANIMATION_STATIC = "static"
+ANIMATION_MODES = (
+    "static",
+    "zoom_in",
+    "zoom_out",
+    "pan_left",
+    "pan_right",
+    "pan_up",
+    "pan_down",
+)
+
 # Logging
 LOG_NAME = "demo-video-generator"
 

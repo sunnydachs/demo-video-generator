@@ -18,6 +18,7 @@ import click
 
 from . import __version__
 from . import ffmpegjoin as ffjoin
+from . import hyperframes as hf_export
 from .config import FPS, VOICEVOX_SPEAKER, VOICEVOX_URL
 from .frames import render_scene_frames
 from .manifest import ManifestError, build_timeline, load_manifest
@@ -127,6 +128,73 @@ def voice(
     for t in timeline:
         click.echo(f"  [{t.id}] {t.start:7.3f} -> {t.end:7.3f}  ({t.narration_duration:.3f}s narr)")
     click.echo(f"wrote {timing_path}")
+
+
+@main.command("export-hyperframes")
+@click.argument("manifest", type=click.Path(exists=True, dir_okay=False))
+@click.option("--cache-dir", default="wav-cache", type=click.Path(file_okay=False, dir_okay=True))
+@click.option("--out", "out_dir", default="dist/hyperframes", type=click.Path(file_okay=False, dir_okay=True))
+@click.option(
+    "--with-audio/--no-audio",
+    default=True,
+    help="Copy narration wavs and wire <audio> elements (default: with audio).",
+)
+@click.option("--verbose", "verbose", is_flag=True)
+def export_hyperframes(
+    manifest: str,
+    cache_dir: str,
+    out_dir: str,
+    with_audio: bool,
+    verbose: bool,
+) -> None:
+    """Generate a HyperFrames project (index.html + assets) from the manifest.
+
+    Output is a self-contained HyperFrames project; run
+    ``npx hyperframes check`` / ``render`` inside the output directory.
+    Narration timing comes from the wav cache; scene audio is placed at each
+    scene's global start.
+    """
+    _setup_logging(verbose)
+    manifest_path = Path(manifest)
+    base_dir = manifest_path.resolve().parent
+    loaded = _load(manifest)
+    durations = _read_durations(None, cache_dir, loaded)
+    timeline = build_timeline(loaded.scenes, durations)
+    total_duration = timeline[-1].end if timeline else None
+
+    wavs = None
+    if with_audio:
+        wavs = {}
+        for scene in loaded.scenes:
+            wav = cache_path_for(scene.narration, Path(cache_dir))
+            wavs[scene.id] = wav if wav.exists() else None
+        missing = [sid for sid, w in wavs.items() if w is None]
+        if missing:
+            raise click.ClickException(
+                f"narration wav(s) missing for scene(s) {missing}; run `voice` first (or --no-audio)"
+            )
+
+    html = hf_export.build_index_html(
+        loaded.scenes,
+        total_duration=total_duration,
+        timeline=timeline,
+        include_audio=with_audio,
+    )
+    mapping = hf_export.write_project(
+        Path(out_dir),
+        html,
+        loaded.scenes,
+        base_dir=base_dir,
+        wavs=wavs,
+    )
+    for sid, assets in mapping.items():
+        bits = []
+        if "image" in assets:
+            bits.append(f"image={assets['image']}")
+        if "audio" in assets:
+            bits.append(f"audio={assets['audio']}")
+        click.echo(f"  [{sid}] {' '.join(bits)}")
+    click.echo(f"wrote HyperFrames project to {out_dir} (index.html + assets)")
 
 
 @main.command()
